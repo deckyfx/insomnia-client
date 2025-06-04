@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// CHANGELOG: [2025-06-05] - Added --auto/-a argument to automatically find first YAML file in current directory
 // CHANGELOG: [2025-06-04] - Created CLI entry point for insomnia-cli with argument parsing and request execution
 // CHANGELOG: [2025-06-04] - Made --config optional when using --interactive mode, allowing users to load config within interactive session
 // CHANGELOG: [2025-06-04] - Added 'list' command to list all available request nodes alongside existing 'request list' syntax
@@ -8,6 +9,8 @@ import { InsomniaClient } from "./insomnia-client";
 import { FileCacheDriver, InMemoryCacheDriver } from "./cache-drivers/index";
 import { FileCookieDriver, InMemoryCookieDriver } from "./cookie-drivers/index";
 import { startInteractiveMode } from "./interactive";
+import { readdirSync } from "fs";
+import { join } from "path";
 
 /**
  * CLI interface for Insomnia HTTP request testing tool
@@ -27,6 +30,7 @@ import { startInteractiveMode } from "./interactive";
 
 interface CliOptions {
   config?: string;
+  auto?: boolean;
   env?: string;
   cookie?: string;
   cache?: string;
@@ -35,6 +39,68 @@ interface CliOptions {
   interactive?: boolean;
   verbose?: boolean;
   help?: boolean;
+}
+
+/**
+ * Finds the first YAML file in the current working directory
+ * @returns Path to the first YAML file found, or undefined if none found
+ * @example
+ * ```typescript
+ * const yamlFile = findFirstYamlFile();
+ * if (yamlFile) {
+ *   console.log(`Found YAML file: ${yamlFile}`);
+ * }
+ * ```
+ */
+function findFirstYamlFile(): string | undefined {
+  try {
+    const cwd = process.cwd();
+    const files = readdirSync(cwd);
+    
+    // Look for files with .yaml or .yml extensions
+    const yamlFile = files.find(file => 
+      file.toLowerCase().endsWith('.yaml') || file.toLowerCase().endsWith('.yml')
+    );
+    
+    return yamlFile ? join(cwd, yamlFile) : undefined;
+  } catch (error) {
+    console.warn(`Warning: Could not read current directory: ${error}`);
+    return undefined;
+  }
+}
+
+/**
+ * Finds the first .env file in the current working directory with priority logic
+ * Priority: "env" > first found "*.env" file
+ * @returns Path to the first .env file found, or undefined if none found
+ * @example
+ * ```typescript
+ * const envFile = findFirstEnvFile();
+ * if (envFile) {
+ *   console.log(`Found .env file: ${envFile}`);
+ * }
+ * ```
+ */
+function findFirstEnvFile(): string | undefined {
+  try {
+    const cwd = process.cwd();
+    const files = readdirSync(cwd);
+    
+    // Priority 1: Look for exact "env" file
+    if (files.includes('env')) {
+      return join(cwd, 'env');
+    }
+    
+    // Priority 2: Look for files ending with .env
+    const envFile = files.find(file => 
+      file.toLowerCase().endsWith('.env')
+    );
+    
+    return envFile ? join(cwd, envFile) : undefined;
+  } catch (error) {
+    console.warn(`Warning: Could not read current directory for .env files: ${error}`);
+    return undefined;
+  }
 }
 
 /**
@@ -51,6 +117,10 @@ function parseArguments(args: string[]): CliOptions {
     switch (arg) {
       case '--config':
         options.config = args[++i];
+        break;
+      case '--auto':
+      case '-a':
+        options.auto = true;
         break;
       case '--env':
         options.env = args[++i];
@@ -100,6 +170,7 @@ USAGE:
 
 OPTIONS:
   --config <file>      Path to Insomnia YAML configuration file (optional with --interactive)
+  --auto, -a           Automatically find and use first YAML and .env files in current directory
   --env <file>         Path to environment variables file (optional)
   --cookie <file>      Path to cookie storage file (optional, uses memory if not specified)
   --cache <file>       Path to cache directory (optional, uses memory if not specified)
@@ -114,6 +185,12 @@ COMMANDS:
 EXAMPLES:
   # Basic request execution
   bun index.ts --config insomnia.yaml request "API/Auth/Login"
+
+  # Auto-detect YAML and .env files in current directory
+  bun index.ts --auto request "API/Auth/Login"
+
+  # Auto-detect with explicit .env file (--env takes precedence)
+  bun index.ts --auto --env custom.env request "API/Auth/Login"
 
   # With environment variables
   bun index.ts --config config.yaml --env .env request "API/Users/GetProfile"
@@ -257,9 +334,33 @@ async function main(): Promise<void> {
     process.exit(0);
   }
   
+  // Resolve config file: --config takes precedence over --auto
+  let configPath: string | undefined = options.config;
+  let envPath: string | undefined = options.env;
+  
+  if (!configPath && options.auto) {
+    configPath = findFirstYamlFile();
+    if (configPath) {
+      console.log(`🔍 Auto-detected YAML file: ${configPath}`);
+    } else {
+      console.error("❌ Error: No YAML files found in current directory");
+      console.error("Use --config to specify a configuration file or ensure a .yaml/.yml file exists in the current directory");
+      process.exit(1);
+    }
+  }
+  
+  // Resolve env file: --env takes precedence over auto-detected .env
+  if (!envPath && options.auto) {
+    envPath = findFirstEnvFile();
+    if (envPath) {
+      console.log(`🔍 Auto-detected .env file: ${envPath}`);
+    }
+    // Note: .env is optional, so we don't error if none found
+  }
+  
   // Validate required arguments
-  if (!options.config && !options.interactive) {
-    console.error("❌ Error: --config option is required (unless using --interactive mode)");
+  if (!configPath && !options.interactive) {
+    console.error("❌ Error: --config option or --auto flag is required (unless using --interactive mode)");
     console.error("Use --help for usage information");
     process.exit(1);
   }
@@ -272,7 +373,7 @@ async function main(): Promise<void> {
   
   try {
     // Handle interactive mode without config file
-    if (options.interactive && !options.config) {
+    if (options.interactive && !configPath) {
       // Import the standalone interactive CLI function
       const { startInteractiveCLI } = await import("./interactive");
       await startInteractiveCLI();
@@ -290,15 +391,15 @@ async function main(): Promise<void> {
       : new InMemoryCookieDriver();
     
     console.log("🚀 Initializing Insomnia CLI...");
-    console.log(`📁 Config: ${options.config}`);
-    if (options.env) console.log(`🔧 Environment: ${options.env}`);
+    console.log(`📁 Config: ${configPath}`);
+    if (envPath) console.log(`🔧 Environment: ${envPath}`);
     if (options.cookie) console.log(`🍪 Cookies: ${options.cookie}`);
     if (options.cache) console.log(`💾 Cache: ${options.cache}`);
     
     // Create and configure client
     const client = new InsomniaClient({
-      config: options.config,
-      env: options.env,
+      config: configPath!,
+      env: envPath,
       cookieDriver,
       cacheDriver
     });

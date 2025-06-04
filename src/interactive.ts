@@ -1,9 +1,10 @@
+// CHANGELOG: [2025-06-05] - Added 'load auto' command to auto-detect YAML and .env files in current directory
 // CHANGELOG: [2025-06-04] - Created interactive CLI interface with continuous prompt loop and command parsing
 // CHANGELOG: [2025-06-04] - Added support for numeric request selection based on list output
 // CHANGELOG: [2025-06-04] - Added auto-loading of request paths after config/env loading
 // CHANGELOG: [2025-06-04] - Added command history support with persistent file storage and arrow key navigation
 
-import { appendFileSync, existsSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { FileCookieDriver } from "./cookie-drivers";
 import { FileCacheDriver } from "./cache-drivers";
@@ -31,6 +32,68 @@ let lastRequestPaths: string[] = [];
 const HISTORY_FILE_PATH = join(process.cwd(), ".interactive.history");
 const COOKIE_FILE_PATH = join(process.cwd(), ".interactive.cookie");
 const CACHE_FILE_PATH = join(process.cwd(), ".interactive.cache");
+
+/**
+ * Finds the first YAML file in the current working directory
+ * @returns Path to the first YAML file found, or undefined if none found
+ * @example
+ * ```typescript
+ * const yamlFile = findFirstYamlFile();
+ * if (yamlFile) {
+ *   console.log(`Found YAML file: ${yamlFile}`);
+ * }
+ * ```
+ */
+function findFirstYamlFile(): string | undefined {
+  try {
+    const cwd = process.cwd();
+    const files = readdirSync(cwd);
+    
+    // Look for files with .yaml or .yml extensions
+    const yamlFile = files.find(file => 
+      file.toLowerCase().endsWith('.yaml') || file.toLowerCase().endsWith('.yml')
+    );
+    
+    return yamlFile ? join(cwd, yamlFile) : undefined;
+  } catch (error) {
+    console.warn(`Warning: Could not read current directory: ${error}`);
+    return undefined;
+  }
+}
+
+/**
+ * Finds the first .env file in the current working directory with priority logic
+ * Priority: "env" > first found "*.env" file
+ * @returns Path to the first .env file found, or undefined if none found
+ * @example
+ * ```typescript
+ * const envFile = findFirstEnvFile();
+ * if (envFile) {
+ *   console.log(`Found .env file: ${envFile}`);
+ * }
+ * ```
+ */
+function findFirstEnvFile(): string | undefined {
+  try {
+    const cwd = process.cwd();
+    const files = readdirSync(cwd);
+    
+    // Priority 1: Look for exact "env" file
+    if (files.includes('env')) {
+      return join(cwd, 'env');
+    }
+    
+    // Priority 2: Look for files ending with .env
+    const envFile = files.find(file => 
+      file.toLowerCase().endsWith('.env')
+    );
+    
+    return envFile ? join(cwd, envFile) : undefined;
+  } catch (error) {
+    console.warn(`Warning: Could not read current directory for .env files: ${error}`);
+    return undefined;
+  }
+}
 
 /**
  * Loads command history from the persistent history file
@@ -133,6 +196,7 @@ function showHelp(): void {
 Available commands:
   load config <file>        - Load Insomnia YAML configuration file
   load env <file>           - Load environment variables from file
+  load auto                 - Auto-detect and load first YAML and .env files in current directory
   list request-nodes        - List all available request node paths
   request [--verbose] <path|number> - Execute HTTP request for the specified node path or number
   help                      - Show this help message
@@ -141,6 +205,7 @@ Available commands:
 Examples:
   load config ./insomnia.yaml
   load env ./.env
+  load auto                 - Auto-detect both YAML and .env files
   list request-nodes
   request API/Home/Get User
   request 1
@@ -162,37 +227,69 @@ async function executeCommand(
   try {
     switch (command.name.toLowerCase()) {
       case "load":
-        if (command.args.length < 2) {
+        if (command.args.length < 1) {
           console.log(
-            "❌ Error: load command requires subcommand and file path"
+            "❌ Error: load command requires a subcommand"
           );
-          console.log("Usage: load config <file> | load env <file>");
+          console.log("Usage: load config <file> | load env <file> | load auto");
           return false;
         }
 
         const subCommand = command.args[0]?.toLowerCase();
         const filePath = command.args[1];
 
-        if (!filePath) {
-          console.log("❌ Error: file path is required");
+        // For 'auto' subcommand, no file path is needed
+        if (subCommand !== "auto" && !filePath) {
+          console.log("❌ Error: file path is required for config and env subcommands");
+          console.log("Usage: load config <file> | load env <file> | load auto");
           return false;
         }
 
         if (subCommand === "config") {
-          console.log(`📁 Loading configuration from: ${filePath}`);
-          client.loadConfig(filePath);
+          console.log(`📁 Loading configuration from: ${filePath!}`);
+          client.loadConfig(filePath!);
           console.log("✅ Configuration loaded successfully");
           // Auto-load request paths for quick numeric access
           updateRequestPaths(client);
         } else if (subCommand === "env") {
-          console.log(`🌍 Loading environment variables from: ${filePath}`);
-          client.loadEnv(filePath);
+          console.log(`🌍 Loading environment variables from: ${filePath!}`);
+          client.loadEnv(filePath!);
           console.log("✅ Environment variables loaded successfully");
           // Auto-load request paths in case config was already loaded and env affects resolution
           updateRequestPaths(client);
+        } else if (subCommand === "auto") {
+          // Auto-detect YAML and .env files in current directory
+          console.log("🔍 Auto-detecting configuration files in current directory...");
+          
+          // Find and load YAML file
+          const configPath = findFirstYamlFile();
+          if (configPath) {
+            console.log(`🔍 Auto-detected YAML file: ${configPath}`);
+            console.log(`📁 Loading configuration from: ${configPath}`);
+            client.loadConfig(configPath);
+            console.log("✅ Configuration loaded successfully");
+          } else {
+            console.log("❌ Error: No YAML files found in current directory");
+            console.log("Ensure a .yaml/.yml file exists in the current directory");
+            return false;
+          }
+          
+          // Find and load .env file (optional)
+          const envPath = findFirstEnvFile();
+          if (envPath) {
+            console.log(`🔍 Auto-detected .env file: ${envPath}`);
+            console.log(`🌍 Loading environment variables from: ${envPath}`);
+            client.loadEnv(envPath);
+            console.log("✅ Environment variables loaded successfully");
+          } else {
+            console.log("ℹ️  No .env files found in current directory (optional)");
+          }
+          
+          // Auto-load request paths for quick numeric access
+          updateRequestPaths(client);
         } else {
           console.log(`❌ Error: unknown load subcommand "${subCommand}"`);
-          console.log("Usage: load config <file> | load env <file>");
+          console.log("Usage: load config <file> | load env <file> | load auto");
           return false;
         }
         break;

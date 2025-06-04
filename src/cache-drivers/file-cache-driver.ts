@@ -1,3 +1,4 @@
+// CHANGELOG: [2025-06-05] - Updated FileCacheDriver to use file path directly instead of treating as directory
 // CHANGELOG: [2025-06-05] - Modified FileCacheDriver to store all cache entries in a single file instead of separate files per request
 // CHANGELOG: [2025-06-04] - Created FileCacheDriver for persistent file-based pre-request caching
 
@@ -15,7 +16,7 @@ import { CacheDriver } from "./base-cache-driver";
  * Data persists between application restarts
  * @example
  * ```typescript
- * const cache = new FileCacheDriver('./cache');
+ * const cache = new FileCacheDriver('./cache.json');
  * await cache.set('auth_token', 'bearer_xyz', { ttl: 3600000 });
  * const token = await cache.get('auth_token');
  * ```
@@ -25,25 +26,37 @@ export class FileCacheDriver extends CacheDriver {
 
   /**
    * Creates a new FileCacheDriver instance
-   * @param cacheDir - Directory path where the single cache file will be stored
+   * @param cacheFilePath - File path where the cache will be stored as JSON
    * @example
    * ```typescript
-   * const cache = new FileCacheDriver('./cache');
+   * const cache = new FileCacheDriver('./cache.json');
+   * const interactiveCache = new FileCacheDriver('./.interactive.cache');
    * ```
    */
-  constructor(cacheDir: string = "./.cache") {
+  constructor(cacheFilePath: string = "./cache.json") {
     super();
-    this.cacheFilePath = `${cacheDir}/cache.json`;
+    this.cacheFilePath = cacheFilePath;
     this.ensureCacheFile();
   }
 
   /**
    * Ensures the cache file exists and initializes it if needed
+   * Creates parent directory if it doesn't exist
    */
   private async ensureCacheFile(): Promise<void> {
     try {
       const file = Bun.file(this.cacheFilePath);
       if (!(await file.exists())) {
+        // Create parent directory if it doesn't exist
+        const parentDir = this.cacheFilePath.split('/').slice(0, -1).join('/');
+        if (parentDir && parentDir !== this.cacheFilePath) {
+          try {
+            await Bun.$`mkdir -p "${parentDir}"`;
+          } catch {
+            // Ignore mkdir errors, file write will fail if directory can't be created
+          }
+        }
+        
         // Initialize with empty cache object
         await Bun.write(this.cacheFilePath, JSON.stringify({}, null, 2));
       }
