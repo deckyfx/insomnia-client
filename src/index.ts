@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // CHANGELOG: [2025-06-04] - Created CLI entry point for insomnia-cli with argument parsing and request execution
+// CHANGELOG: [2025-06-04] - Made --config optional when using --interactive mode, allowing users to load config within interactive session
+// CHANGELOG: [2025-06-04] - Added 'list' command to list all available request nodes alongside existing 'request list' syntax
+// CHANGELOG: [2025-06-04] - Added request headers display in verbose mode to show both sent and received headers
 
 import { InsomniaClient } from "./insomnia-client";
 import { FileCacheDriver, InMemoryCacheDriver } from "./cache-drivers/index";
@@ -28,6 +31,7 @@ interface CliOptions {
   cookie?: string;
   cache?: string;
   request?: string;
+  list?: boolean;
   interactive?: boolean;
   verbose?: boolean;
   help?: boolean;
@@ -59,6 +63,9 @@ function parseArguments(args: string[]): CliOptions {
         break;
       case 'request':
         options.request = args[++i];
+        break;
+      case 'list':
+        options.list = true;
         break;
       case '--interactive':
       case '-i':
@@ -92,7 +99,7 @@ USAGE:
   bun index.ts [OPTIONS] [COMMAND]
 
 OPTIONS:
-  --config <file>      Path to Insomnia YAML configuration file (required)
+  --config <file>      Path to Insomnia YAML configuration file (optional with --interactive)
   --env <file>         Path to environment variables file (optional)
   --cookie <file>      Path to cookie storage file (optional, uses memory if not specified)
   --cache <file>       Path to cache directory (optional, uses memory if not specified)
@@ -102,6 +109,7 @@ OPTIONS:
 
 COMMANDS:
   request <path>       Execute a request by path (e.g., "API/Auth/Login") or by number
+  list                 List all available request nodes
 
 EXAMPLES:
   # Basic request execution
@@ -114,10 +122,16 @@ EXAMPLES:
   bun index.ts --config config.yaml --cookie cookies.json --cache .cache request 1
 
   # List all available requests
+  bun index.ts --config config.yaml list
+
+  # List all available requests (alternative syntax)
   bun index.ts --config config.yaml request list
 
   # Interactive mode for multiple requests
   bun index.ts --config config.yaml --interactive
+
+  # Interactive mode without pre-loading config (load config within the session)
+  bun index.ts --interactive
 
   # Verbose output with detailed request/response information
   bun index.ts --config config.yaml --verbose request "API/Auth/Login"
@@ -201,7 +215,13 @@ async function executeRequest(client: InsomniaClient, requestIdentifier: string,
       console.log(`🌐 URL: ${response.url}`);
       console.log(`📤 Method: ${response.method}`);
       
-      // Display headers
+      // Display request headers
+      console.log("\n📤 Request Headers:");
+      Object.entries(response.requestHeaders).forEach(([key, value]) => {
+        console.log(`  ${key}: ${value}`);
+      });
+      
+      // Display response headers
       console.log("\n📨 Response Headers:");
       Object.entries(response.headers).forEach(([key, value]) => {
         console.log(`  ${key}: ${value}`);
@@ -238,19 +258,27 @@ async function main(): Promise<void> {
   }
   
   // Validate required arguments
-  if (!options.config) {
-    console.error("❌ Error: --config option is required");
+  if (!options.config && !options.interactive) {
+    console.error("❌ Error: --config option is required (unless using --interactive mode)");
     console.error("Use --help for usage information");
     process.exit(1);
   }
   
-  if (!options.request && !options.interactive) {
-    console.error("❌ Error: either 'request' command or '--interactive' mode is required");
+  if (!options.request && !options.interactive && !options.list) {
+    console.error("❌ Error: either 'request' command, 'list' command, or '--interactive' mode is required");
     console.error("Use --help for usage information");
     process.exit(1);
   }
   
   try {
+    // Handle interactive mode without config file
+    if (options.interactive && !options.config) {
+      // Import the standalone interactive CLI function
+      const { startInteractiveCLI } = await import("./interactive");
+      await startInteractiveCLI();
+      return;
+    }
+    
     // Initialize cache driver
     const cacheDriver = options.cache 
       ? new FileCacheDriver(options.cache)
@@ -277,9 +305,15 @@ async function main(): Promise<void> {
     
     console.log("✅ Configuration loaded successfully!\n");
     
-    // Handle interactive mode
+    // Handle interactive mode with pre-configured client
     if (options.interactive) {
       await startInteractiveMode(client);
+      return;
+    }
+    
+    // Handle list command
+    if (options.list) {
+      listRequests(client);
       return;
     }
     
