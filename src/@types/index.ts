@@ -19,4 +19,8 @@ export type {
   EnvVariables,
   ReadEnvOptions,
   TemplateResolverOptions,
+  ResponseTemplate,
+  FakerType,
+  TemplateType,
+  ScriptTemplateOptions,
 } from "./utils/index";
