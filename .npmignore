@@ -1,0 +1,37 @@
+# Source files (only ship the built dist)
+src/
+tsconfig.json
+bun.lock
+
+# Development files
+.vscode/
+.cursor/
+
+# Test files
+test/
+tests/
+*.test.ts
+*.test.js
+
+# Temporary files
+.interactive.cache/
+.interactive.cookie
+.interactive.history
+*.tmp
+*.temp
+
+# Build artifacts not needed
+node_modules/
+
+# Documentation that's not needed in package
+CLAUDE.md
+.gitignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~

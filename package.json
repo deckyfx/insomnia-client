@@ -1,0 +1,61 @@
+{
+  "name": "@insomnia-cli/core",
+  "version": "1.0.0",
+  "description": "HTTP request testing tool compatible with Insomnia configuration format",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "type": "module",
+  "private": false,
+  "bin": {
+    "insomnia-cli": "./dist/index.js"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "package.json"
+  ],
+  "keywords": [
+    "insomnia",
+    "api",
+    "testing",
+    "http",
+    "cli",
+    "request",
+    "automation",
+    "yaml"
+  ],
+  "author": "Insomnia CLI Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/insomnia-cli.git"
+  },
+  "homepage": "https://github.com/your-username/insomnia-cli#readme",
+  "bugs": {
+    "url": "https://github.com/your-username/insomnia-cli/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "bun": ">=1.2.15"
+  },
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun run clean && bun run build:bundle && bun run build:shebang",
+    "build:bundle": "bun build src/index.ts --target=node --outdir=dist --minify --external=yaml",
+    "build:shebang": "sed -i '' '1s|^#!/usr/bin/env node|#!/usr/bin/env node|' dist/index.js && chmod +x dist/index.js",
+    "clean": "rm -rf dist",
+    "typecheck": "bun --bun tsc --noEmit",
+    "prepublishOnly": "bun run build && bun run typecheck",
+    "test": "bun run typecheck"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/yaml": "^1.9.7"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "yaml": "^2.8.0"
+  }
+}
