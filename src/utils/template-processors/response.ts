@@ -1,12 +1,28 @@
 // CHANGELOG: [2025-06-04] - Created modular response template processing for script templates
+// CHANGELOG: [2025-06-04] - Fixed chained pre-request execution by using per-client execution context
 
 import type { ResponseTemplate } from "../../@types/utils";
 import type { InsomniaClient } from "../../insomnia-client";
 
 /**
- * Tracks request execution to prevent infinite recursion
+ * Tracks request execution to prevent infinite recursion per client instance
+ * Using WeakMap to ensure proper cleanup when client instances are garbage collected
  */
-const executionStack = new Set<string>();
+const executionStacks = new WeakMap<InsomniaClient, Set<string>>();
+
+/**
+ * Gets or creates an execution stack for a specific client instance
+ * @param client - The InsomniaClient instance
+ * @returns The execution stack for this client
+ */
+function getExecutionStack(client: InsomniaClient): Set<string> {
+  let stack = executionStacks.get(client);
+  if (!stack) {
+    stack = new Set<string>();
+    executionStacks.set(client, stack);
+  }
+  return stack;
+}
 
 /**
  * Processes a response template with parsed arguments
@@ -50,17 +66,8 @@ export async function processResponseTemplate(
 
     if (!arg) continue;
 
-    // Check if it's a number (maxAge)
-    if (/^\d+$/.test(arg)) {
-      maxAge = parseInt(arg, 10);
-    }
-    // Check if it's 'when-expired' flag
-    else if (arg === "when-expired") {
-      // This is just a flag, handled by maxAge presence
-      continue;
-    }
-    // Check if it's a base64 encoded JSON path
-    else if (arg.startsWith("b64::") && arg.endsWith("::46b")) {
+    // Check if it's a base64 encoded JSON path (do this first!)
+    if (arg.startsWith("b64::") && arg.endsWith("::46b")) {
       // Decode the base64 content and use it as JSON path
       const base64Content = arg.slice(5, -5); // Remove 'b64::' and '::46b'
       try {
@@ -72,9 +79,22 @@ export async function processResponseTemplate(
         filter = arg;
       }
     }
-    // Otherwise, treat it as a JSON path
-    else {
+    // Check if it's a number (maxAge)
+    else if (/^\d+$/.test(arg)) {
+      maxAge = parseInt(arg, 10);
+    }
+    // Check if it's 'when-expired' or 'never' flags
+    else if (arg === "when-expired" || arg === "never") {
+      // These are cache behavior flags, handled by maxAge presence
+      continue;
+    }
+    // Otherwise, treat it as a JSON path (only if we don't have one yet)
+    else if (!jsonPath) {
       jsonPath = arg;
+    }
+    // If we already have a jsonPath, treat it as a filter
+    else {
+      filter = arg;
     }
   }
 
@@ -124,6 +144,9 @@ async function resolveResponseTemplate(
     );
   }
 
+  // Get execution stack for this client instance
+  const executionStack = getExecutionStack(client);
+  
   // Check for circular dependencies to prevent infinite recursion
   if (executionStack.has(requestId)) {
     throw new Error(

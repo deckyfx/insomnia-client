@@ -43,6 +43,7 @@
     "build": "bun run clean && bun run build:bundle && bun run build:shebang",
     "build:bundle": "bun build src/index.ts --target=node --outdir=dist --minify --external=yaml",
     "build:shebang": "sed -i '' '1s|^#!/usr/bin/env node|#!/usr/bin/env node|' dist/index.js && chmod +x dist/index.js",
+    "build:binary": "bun build --compile --minify --sourcemap src/index.ts --outfile insomnia-cli",
     "clean": "rm -rf dist",
     "typecheck": "bun --bun tsc --noEmit",
     "prepublishOnly": "bun run build && bun run typecheck",
