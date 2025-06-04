@@ -1,3 +1,4 @@
+// CHANGELOG: [2025-06-05] - Modified FileCacheDriver to store all cache entries in a single file instead of separate files per request
 // CHANGELOG: [2025-06-04] - Created FileCacheDriver for persistent file-based pre-request caching
 
 import type {
@@ -10,7 +11,7 @@ import { CacheDriver } from "./base-cache-driver";
 
 /**
  * File-based cache driver implementation
- * Stores cache entries as JSON files in a specified directory
+ * Stores all cache entries in a single JSON file
  * Data persists between application restarts
  * @example
  * ```typescript
@@ -20,11 +21,11 @@ import { CacheDriver } from "./base-cache-driver";
  * ```
  */
 export class FileCacheDriver extends CacheDriver {
-  private cacheDir: string;
+  private cacheFilePath: string;
 
   /**
    * Creates a new FileCacheDriver instance
-   * @param cacheDir - Directory path where cache files will be stored
+   * @param cacheDir - Directory path where the single cache file will be stored
    * @example
    * ```typescript
    * const cache = new FileCacheDriver('./cache');
@@ -32,76 +33,62 @@ export class FileCacheDriver extends CacheDriver {
    */
   constructor(cacheDir: string = "./.cache") {
     super();
-    this.cacheDir = cacheDir;
-    this.ensureCacheDir();
+    this.cacheFilePath = `${cacheDir}/cache.json`;
+    this.ensureCacheFile();
   }
 
   /**
-   * Ensures the cache directory exists
+   * Ensures the cache file exists and initializes it if needed
    */
-  private async ensureCacheDir(): Promise<void> {
+  private async ensureCacheFile(): Promise<void> {
     try {
-      await Bun.write(`${this.cacheDir}/.gitkeep`, "");
+      const file = Bun.file(this.cacheFilePath);
+      if (!(await file.exists())) {
+        // Initialize with empty cache object
+        await Bun.write(this.cacheFilePath, JSON.stringify({}, null, 2));
+      }
     } catch (error) {
-      // Directory creation failed or file write failed
-      console.warn(`Failed to ensure cache directory: ${error}`);
+      console.warn(`Failed to ensure cache file: ${error}`);
     }
   }
 
   /**
-   * Gets the file path for a cache key
-   * @param key - The cache key
-   * @returns The full file path for the cache entry
+   * Reads all cache entries from the single cache file
+   * @returns Object containing all cache entries keyed by their cache key
    */
-  private getFilePath(key: string): string {
-    // Create a safe filename from the key by replacing unsafe characters
-    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, "_");
-    return `${this.cacheDir}/${safeKey}.json`;
-  }
-
-  /**
-   * Reads a cache entry from file
-   * @param filePath - The file path to read from
-   * @returns The cache entry or undefined if file doesn't exist or is invalid
-   */
-  private async readCacheFile(
-    filePath: string
-  ): Promise<CacheEntry | undefined> {
+  private async readAllCacheEntries(): Promise<Record<string, CacheEntry>> {
     try {
-      const file = Bun.file(filePath);
+      const file = Bun.file(this.cacheFilePath);
       if (!(await file.exists())) {
-        return undefined;
+        return {};
       }
 
       const content = await file.text();
-      const entry = JSON.parse(content) as CacheEntry;
+      const entries = JSON.parse(content) as Record<string, CacheEntry>;
 
-      // Validate entry structure
-      if (!entry.id || !entry.key || entry.createdAt === undefined) {
-        console.warn(`Invalid cache entry structure in file: ${filePath}`);
-        return undefined;
+      // Validate entries structure
+      if (typeof entries !== 'object' || entries === null) {
+        console.warn(`Invalid cache file structure: expected object`);
+        return {};
       }
 
-      return entry;
+      return entries;
     } catch (error) {
-      console.warn(`Failed to read cache file ${filePath}: ${error}`);
-      return undefined;
+      console.warn(`Failed to read cache file ${this.cacheFilePath}: ${error}`);
+      return {};
     }
   }
 
   /**
-   * Writes a cache entry to file
-   * @param filePath - The file path to write to
-   * @param entry - The cache entry to write
+   * Writes all cache entries to the single cache file
+   * @param entries - Object containing all cache entries keyed by their cache key
    */
-  private async writeCacheFile(
-    filePath: string,
-    entry: CacheEntry
-  ): Promise<void> {
+  private async writeAllCacheEntries(entries: Record<string, CacheEntry>): Promise<void> {
     try {
-      await Bun.write(filePath, JSON.stringify(entry, null, 2));
+      await this.ensureCacheFile();
+      await Bun.write(this.cacheFilePath, JSON.stringify(entries, null, 2));
     } catch (error) {
-      console.warn(`Failed to write cache file ${filePath}: ${error}`);
+      console.warn(`Failed to write cache file ${this.cacheFilePath}: ${error}`);
       throw new Error(`Cache write failed: ${error}`);
     }
   }
@@ -116,8 +103,8 @@ export class FileCacheDriver extends CacheDriver {
     key: string,
     options?: GetCacheOptions
   ): Promise<CacheEntry | undefined> {
-    const filePath = this.getFilePath(key);
-    const entry = await this.readCacheFile(filePath);
+    const entries = await this.readAllCacheEntries();
+    const entry = entries[key];
 
     if (!entry) {
       return undefined;
@@ -130,11 +117,12 @@ export class FileCacheDriver extends CacheDriver {
       if (options?.ignoreExpired === false) {
         return entry; // Return expired entry if requested
       }
-      // Remove expired entry file and return undefined
+      // Remove expired entry and update file
+      delete entries[key];
       try {
-        await Bun.write(filePath, ""); // Clear file
+        await this.writeAllCacheEntries(entries);
       } catch {
-        // Ignore deletion errors
+        // Ignore write errors for cleanup
       }
       return undefined;
     }
@@ -150,7 +138,7 @@ export class FileCacheDriver extends CacheDriver {
    * @returns Promise resolving when the value is cached
    */
   async set(key: string, value: any, options?: SetCacheOptions): Promise<void> {
-    await this.ensureCacheDir();
+    const entries = await this.readAllCacheEntries();
 
     const now = Date.now();
     let expiresAt: number | undefined;
@@ -171,8 +159,8 @@ export class FileCacheDriver extends CacheDriver {
       metadata: options?.metadata,
     };
 
-    const filePath = this.getFilePath(key);
-    await this.writeCacheFile(filePath, entry);
+    entries[key] = entry;
+    await this.writeAllCacheEntries(entries);
   }
 
   /**
@@ -191,39 +179,20 @@ export class FileCacheDriver extends CacheDriver {
    * @returns Promise resolving to true if the key was removed, false if not found
    */
   async delete(key: string): Promise<boolean> {
-    const filePath = this.getFilePath(key);
-    try {
-      const file = Bun.file(filePath);
-      if (!(await file.exists())) {
-        return false;
-      }
-
-      // Clear the file content instead of deleting to avoid permission issues
-      await Bun.write(filePath, "");
-      return true;
-    } catch (error) {
-      console.warn(`Failed to delete cache file ${filePath}: ${error}`);
+    const entries = await this.readAllCacheEntries();
+    
+    if (!(key in entries)) {
       return false;
     }
-  }
 
-  /**
-   * Gets all cache files in the cache directory
-   * @returns Array of cache file paths
-   */
-  private async getCacheFiles(): Promise<string[]> {
+    delete entries[key];
+    
     try {
-      const globber = new Bun.Glob("*.json");
-      const files: string[] = [];
-
-      for await (const file of globber.scan(this.cacheDir)) {
-        files.push(`${this.cacheDir}/${file}`);
-      }
-
-      return files;
+      await this.writeAllCacheEntries(entries);
+      return true;
     } catch (error) {
-      console.warn(`Failed to list cache files: ${error}`);
-      return [];
+      console.warn(`Failed to update cache file after deletion: ${error}`);
+      return false;
     }
   }
 
@@ -233,44 +202,54 @@ export class FileCacheDriver extends CacheDriver {
    * @returns Promise resolving to the number of entries cleared
    */
   async clear(options?: ClearCacheOptions): Promise<number> {
-    const files = await this.getCacheFiles();
+    const entries = await this.readAllCacheEntries();
     let cleared = 0;
     const now = Date.now();
 
-    for (const filePath of files) {
+    if (!options) {
+      // Clear all entries
+      cleared = Object.keys(entries).length;
+      await this.writeAllCacheEntries({});
+      return cleared;
+    }
+
+    const keysToDelete: string[] = [];
+
+    for (const [key, entry] of Object.entries(entries)) {
       let shouldClear = false;
 
-      if (!options) {
-        // Clear all files
-        shouldClear = true;
-      } else {
-        const entry = await this.readCacheFile(filePath);
-        if (!entry) continue;
-
-        if (options.expiredOnly) {
-          // Check if entry is expired
-          if (entry.expiresAt && entry.expiresAt <= now) {
-            shouldClear = true;
-          }
-        } else if (options.keyPattern) {
-          // Check if key matches pattern
-          const pattern = options.keyPattern.replace(/\*/g, ".*");
-          const regex = new RegExp(`^${pattern}$`);
-          if (regex.test(entry.key)) {
-            shouldClear = true;
-          }
-        } else {
+      if (options.expiredOnly) {
+        // Check if entry is expired
+        if (entry.expiresAt && entry.expiresAt <= now) {
           shouldClear = true;
         }
+      } else if (options.keyPattern) {
+        // Check if key matches pattern
+        const pattern = options.keyPattern.replace(/\*/g, ".*");
+        const regex = new RegExp(`^${pattern}$`);
+        if (regex.test(entry.key)) {
+          shouldClear = true;
+        }
+      } else {
+        shouldClear = true;
       }
 
       if (shouldClear) {
-        try {
-          await Bun.write(filePath, "");
-          cleared++;
-        } catch (error) {
-          console.warn(`Failed to clear cache file ${filePath}: ${error}`);
-        }
+        keysToDelete.push(key);
+      }
+    }
+
+    // Remove the entries that should be cleared
+    for (const key of keysToDelete) {
+      delete entries[key];
+      cleared++;
+    }
+
+    if (cleared > 0) {
+      try {
+        await this.writeAllCacheEntries(entries);
+      } catch (error) {
+        console.warn(`Failed to update cache file after clearing: ${error}`);
       }
     }
 
@@ -283,24 +262,18 @@ export class FileCacheDriver extends CacheDriver {
    * @returns Promise resolving to array of matching cache entries
    */
   async getAll(options?: GetCacheOptions): Promise<CacheEntry[]> {
-    const files = await this.getCacheFiles();
-    const entries: CacheEntry[] = [];
+    const entries = await this.readAllCacheEntries();
+    const results: CacheEntry[] = [];
     const now = Date.now();
+    const expiredKeys: string[] = [];
 
-    for (const filePath of files) {
-      const entry = await this.readCacheFile(filePath);
-      if (!entry) continue;
-
+    for (const [key, entry] of Object.entries(entries)) {
       // Check if entry is expired
       const isExpired = entry.expiresAt && entry.expiresAt <= now;
 
       if (isExpired && options?.ignoreExpired !== false) {
-        // Skip expired entries unless explicitly requested
-        try {
-          await Bun.write(filePath, ""); // Clean up expired entries
-        } catch {
-          // Ignore cleanup errors
-        }
+        // Skip expired entries unless explicitly requested and mark for cleanup
+        expiredKeys.push(key);
         continue;
       }
 
@@ -313,10 +286,22 @@ export class FileCacheDriver extends CacheDriver {
         }
       }
 
-      entries.push(entry);
+      results.push(entry);
     }
 
-    return entries;
+    // Clean up expired entries if any were found
+    if (expiredKeys.length > 0) {
+      try {
+        for (const key of expiredKeys) {
+          delete entries[key];
+        }
+        await this.writeAllCacheEntries(entries);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -324,17 +309,8 @@ export class FileCacheDriver extends CacheDriver {
    * @returns Promise resolving to the total cache entry count
    */
   async size(): Promise<number> {
-    const files = await this.getCacheFiles();
-    let count = 0;
-
-    for (const filePath of files) {
-      const entry = await this.readCacheFile(filePath);
-      if (entry) {
-        count++;
-      }
-    }
-
-    return count;
+    const entries = await this.readAllCacheEntries();
+    return Object.keys(entries).length;
   }
 
   /**

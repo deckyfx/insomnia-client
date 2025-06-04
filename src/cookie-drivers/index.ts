@@ -1,3 +1,4 @@
+// CHANGELOG: [2025-06-05] - Added SQLite cookie driver export
 // CHANGELOG: [2025-06-04] - Created index file to export all cookie drivers
 
 export type {
@@ -8,3 +9,4 @@ export type {
 export { CookieDriver } from "./base-cookie-driver";
 export { FileCookieDriver } from "./file-cookie-driver";
 export { InMemoryCookieDriver } from "./in-memory-cookie-driver";
+export { SQLiteCookieDriver } from "./sqlite-cookie-driver";

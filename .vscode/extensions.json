@@ -1,10 +1,7 @@
 {
   "recommendations": [
     "oven.bun-vscode",
-    "ms-vscode.vscode-typescript-next",
     "esbenp.prettier-vscode",
-    "ms-vscode.vscode-json",
-    "bradlc.vscode-tailwindcss"
   ],
   "unwantedRecommendations": [
     "ms-vscode.vscode-nodejs-debug"
