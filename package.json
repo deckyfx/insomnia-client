@@ -47,16 +47,19 @@
     "clean": "rm -rf dist",
     "typecheck": "bun --bun tsc --noEmit",
     "prepublishOnly": "bun run build && bun run typecheck",
-    "test": "bun run typecheck"
+    "test": "bun run typecheck",
+    "test-server": "bunx json-server -p 5001 ./db.json5"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/yaml": "^1.9.7"
+    "@types/yaml": "^1.9.7",
+    "json-server": "^1.0.0-beta.3"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
+    "@faker-js/faker": "^9.8.0",
     "yaml": "^2.8.0"
   }
 }

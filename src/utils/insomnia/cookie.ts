@@ -93,10 +93,10 @@ export class InsomniaConfigCookieJar {
   public readonly meta: InsomniaConfigMeta;
   public readonly cookies: InsomniaConfigCookie[];
 
-  constructor(data: { name: string; meta: any; cookies: any[] }) {
+  constructor(data: { name: string; meta: any; cookies?: any[] }) {
     this.name = data.name;
     this.meta = new InsomniaConfigMeta(data.meta);
-    this.cookies = data.cookies.map(
+    this.cookies = (data.cookies || []).map(
       (cookie) => new InsomniaConfigCookie(cookie)
     );
   }

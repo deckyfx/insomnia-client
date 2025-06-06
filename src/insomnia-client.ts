@@ -98,8 +98,11 @@ export class InsomniaClient {
   private async loadInitialCookies(): Promise<void> {
     if (this.config?.cookieJar && this.cookieDriver) {
       try {
+        // Check if cookies array exists, if not, initialize empty array
+        const insomniacookies = this.config.cookieJar.cookies || [];
+        
         // Convert Insomnia cookies to our Cookie format
-        const cookies: Cookie[] = this.config.cookieJar.cookies.map(
+        const cookies: Cookie[] = insomniacookies.map(
           (insomniacookie) => ({
             id: insomniacookie.id,
             key: insomniacookie.key,

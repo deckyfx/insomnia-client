@@ -1,7 +1,8 @@
 // CHANGELOG: [2025-06-04] - Created modular response template processing for script templates
 // CHANGELOG: [2025-06-04] - Fixed chained pre-request execution by using per-client execution context
+// CHANGELOG: [2025-06-06] - Enhanced template format to support XPath and expiry modes
 
-import type { ResponseTemplate } from "../../@types/utils";
+import type { ResponseTemplate, ExpiryMode } from "../../@types/utils";
 import type { InsomniaClient } from "../../insomnia-client";
 
 /**
@@ -25,20 +26,33 @@ function getExecutionStack(client: InsomniaClient): Set<string> {
 }
 
 /**
- * Processes a response template with parsed arguments
+ * Processes a response template with parsed arguments supporting new enhanced format
+ * Template format: {% response ${from_where} ${request_id} ${jsonpath/xpath} ${re_trigger_request_mode} ${expired_time} %}
  * @param args - Array of template arguments starting with 'response'
  * @param client - The InsomniaClient instance
  * @returns Promise resolving to the resolved template value
+ * @example
+ * ```typescript
+ * // Basic usage
+ * const result = await processResponseTemplate(['response', 'body', 'req_123'], client);
+ * 
+ * // With JSONPath
+ * const token = await processResponseTemplate(['response', 'body', 'req_123', 'JC5hY2Nlc3NfdG9rZW4=', 'when-expired', '60'], client);
+ * 
+ * // With XPath (base64 encoded)
+ * const xml = await processResponseTemplate(['response', 'body', 'req_456', 'Ly9yZXNwb25zZS90b2tlbg==', 'always', '300'], client);
+ * ```
  */
 export async function processResponseTemplate(
   args: string[],
   client: InsomniaClient
 ): Promise<string> {
+  // Enhanced format: ['response', field, requestId, base64EncodedPath, expiryMode, maxAge]
   // args[0] should be 'response'
-  // args[1] should be the field (e.g., 'body', 'json', 'status')
+  // args[1] should be the field (e.g., 'body', 'header', 'url')
   // args[2] should be the request ID
-  // args[3] (optional) should be the JSON path or filter
-  // args[4] (optional) should be additional filter or 'when-expired'
+  // args[3] (optional) should be base64 encoded JSONPath or XPath
+  // args[4] (optional) should be expiry mode ('when-expired', 'never', 'no-history', 'always')
   // args[5] (optional) should be maxAge in seconds
 
   if (args.length < 3) {
@@ -57,44 +71,49 @@ export async function processResponseTemplate(
   }
 
   let jsonPath: string | undefined;
-  let filter: string | undefined;
+  let xPath: string | undefined;
+  let expiryMode: ExpiryMode | undefined;
   let maxAge: number | undefined;
 
-  // Parse optional arguments based on their content
-  for (let i = 3; i < args.length; i++) {
-    const arg = args[i];
-
-    if (!arg) continue;
-
-    // Check if it's a base64 encoded JSON path (do this first!)
-    if (arg.startsWith("b64::") && arg.endsWith("::46b")) {
-      // Decode the base64 content and use it as JSON path
-      const base64Content = arg.slice(5, -5); // Remove 'b64::' and '::46b'
+  // Parse the base64 encoded path (arg[3]) if provided
+  if (args[3] && args[3].trim() !== '') {
+    let pathContent = args[3];
+    
+    // Check if it's in Insomnia base64 format: b64::${content}::46b
+    if (pathContent.startsWith('b64::') && pathContent.endsWith('::46b')) {
       try {
-        const decodedPath = atob(base64Content);
-        jsonPath = decodedPath;
+        // Extract the base64 content between b64:: and ::46b
+        const base64Content = pathContent.slice(5, -5); // Remove 'b64::' and '::46b'
+        pathContent = atob(base64Content);
       } catch (error) {
-        console.warn(`Failed to decode base64 argument: ${arg}`, error);
-        // Fallback to treating it as a regular filter
-        filter = arg;
+        console.warn(`Failed to decode Insomnia base64 format: ${args[3]}`, error);
+        // Keep original value as fallback
+        pathContent = args[3];
       }
     }
-    // Check if it's a number (maxAge)
-    else if (/^\d+$/.test(arg)) {
-      maxAge = parseInt(arg, 10);
+    
+    // Now determine if it's XPath or JSONPath
+    if (pathContent.startsWith('/') || pathContent.includes('//') || pathContent.includes('@')) {
+      xPath = pathContent;
+    } else {
+      // Treat as JSONPath
+      jsonPath = pathContent;
     }
-    // Check if it's 'when-expired' or 'never' flags
-    else if (arg === "when-expired" || arg === "never") {
-      // These are cache behavior flags, handled by maxAge presence
-      continue;
+  }
+
+  // Parse expiry mode (arg[4]) if provided
+  if (args[4] && args[4].trim() !== '') {
+    const mode = args[4] as ExpiryMode;
+    if (['when-expired', 'never', 'no-history', 'always'].includes(mode)) {
+      expiryMode = mode;
     }
-    // Otherwise, treat it as a JSON path (only if we don't have one yet)
-    else if (!jsonPath) {
-      jsonPath = arg;
-    }
-    // If we already have a jsonPath, treat it as a filter
-    else {
-      filter = arg;
+  }
+
+  // Parse maxAge (arg[5]) if provided
+  if (args[5] && args[5].trim() !== '') {
+    const age = parseInt(args[5], 10);
+    if (!isNaN(age) && age > 0) {
+      maxAge = age;
     }
   }
 
@@ -103,7 +122,8 @@ export async function processResponseTemplate(
     requestId,
     field,
     jsonPath,
-    filter,
+    xPath,
+    expiryMode,
     maxAge,
   };
 
@@ -121,15 +141,15 @@ async function resolveResponseTemplate(
   template: ResponseTemplate,
   client: InsomniaClient
 ): Promise<string> {
-  const { requestId, field, jsonPath, filter, maxAge } = template;
+  const { requestId, field, jsonPath, xPath, expiryMode, maxAge } = template;
 
   // Create cache key for this specific template
   const cacheKey = `response_template:${requestId}:${field}:${
-    jsonPath || "none"
-  }:${filter || "none"}`;
+    jsonPath || xPath || "none"
+  }:${expiryMode || "default"}`;
 
-  // Check if we have cached data that's still valid
-  if (maxAge && (await client.hasCachedValue(cacheKey))) {
+  // Check if we have cached data that's still valid based on expiry mode
+  if (shouldUseCache(expiryMode, maxAge) && (await client.hasCachedValue(cacheKey))) {
     const cachedValue = await client.getCachedValue(cacheKey);
     if (cachedValue !== undefined && cachedValue) {
       return String(cachedValue);
@@ -191,7 +211,7 @@ async function processResponseForTemplate(
   client?: InsomniaClient,
   cacheKey?: string
 ): Promise<string> {
-  const { field, jsonPath, filter, maxAge } = template;
+  const { field, jsonPath, xPath, expiryMode, maxAge } = template;
 
   // Extract the required field from the response
   let extractedValue: any;
@@ -225,24 +245,23 @@ async function processResponseForTemplate(
       break;
   }
 
-  // Apply JSON path extraction if specified
+  // Apply JSONPath extraction if specified
   if (jsonPath && extractedValue) {
     extractedValue = extractJsonPath(extractedValue, jsonPath);
   }
-
-  // Apply additional filters if specified (future extensibility)
-  if (filter) {
-    // Future: Add support for other filter types here
-    console.log(`Filter not yet implemented: ${filter}`);
+  // Apply XPath extraction if specified
+  else if (xPath && extractedValue) {
+    extractedValue = extractXPath(extractedValue, xPath);
   }
 
   // Convert to string
   const stringValue =
     extractedValue !== undefined ? String(extractedValue) : "";
 
-  // Cache the result if maxAge is specified and client is provided
-  if (maxAge && client && cacheKey) {
-    await client.setCachedValue(cacheKey, stringValue, maxAge * 1000); // Convert seconds to milliseconds
+  // Cache the result based on expiry mode and maxAge
+  if (shouldCacheResult(expiryMode, maxAge) && client && cacheKey) {
+    const ttl = maxAge ? maxAge * 1000 : undefined; // Convert seconds to milliseconds
+    await client.setCachedValue(cacheKey, stringValue, ttl);
   }
 
   return stringValue;
@@ -291,4 +310,111 @@ function extractJsonPath(obj: any, path: string): any {
   }
 
   return current;
+}
+
+/**
+ * Extracts a value from XML/HTML content using an XPath expression
+ * @param content - The XML/HTML content as string
+ * @param xpath - The XPath expression
+ * @returns The extracted value
+ */
+function extractXPath(content: any, xpath: string): any {
+  if (!content || !xpath) return content;
+
+  // Convert content to string if it's not already
+  let xmlString = typeof content === 'string' ? content : String(content);
+  
+  try {
+    // Simple XPath implementation for basic use cases
+    // This is a minimal implementation - for full XPath support, consider using a dedicated library
+    
+    // Handle simple element selection like //element or /root/element
+    if (xpath.includes('//')) {
+      // Extract element name from XPath like //token -> token
+      const elementMatch = xpath.match(/\/\/([a-zA-Z0-9_-]+)/);
+      if (elementMatch) {
+        const elementName = elementMatch[1];
+        const regex = new RegExp(`<${elementName}[^>]*>([^<]*)<\/${elementName}>`, 'i');
+        const match = xmlString.match(regex);
+        return match && match[1] ? match[1].trim() : undefined;
+      }
+    }
+    
+    // Handle attribute selection like //element/@attribute
+    if (xpath.includes('@')) {
+      const attrMatch = xpath.match(/\/\/([a-zA-Z0-9_-]+)\/@([a-zA-Z0-9_-]+)/);
+      if (attrMatch) {
+        const elementName = attrMatch[1];
+        const attrName = attrMatch[2];
+        const regex = new RegExp(`<${elementName}[^>]*${attrName}=["']([^"']*)["'][^>]*>`, 'i');
+        const match = xmlString.match(regex);
+        return match && match[1] ? match[1] : undefined;
+      }
+    }
+    
+    // Handle simple path like /root/element
+    if (xpath.startsWith('/') && !xpath.startsWith('//')) {
+      const pathParts = xpath.split('/').filter(part => part.length > 0);
+      let currentContent = xmlString;
+      
+      for (const part of pathParts) {
+        const regex = new RegExp(`<${part}[^>]*>([\s\S]*?)<\/${part}>`, 'i');
+        const match = currentContent.match(regex);
+        if (match && match[1] !== undefined) {
+          currentContent = match[1];
+        } else {
+          return undefined;
+        }
+      }
+      
+      return currentContent.trim();
+    }
+    
+    console.warn(`Unsupported XPath expression: ${xpath}`);
+    return undefined;
+    
+  } catch (error) {
+    console.warn(`Failed to extract XPath ${xpath}:`, error);
+    return undefined;
+  }
+}
+
+/**
+ * Determines whether to use cached data based on expiry mode
+ * @param expiryMode - The expiry mode setting
+ * @param maxAge - The maximum age setting
+ * @returns Whether to use cached data
+ */
+function shouldUseCache(expiryMode?: ExpiryMode, maxAge?: number): boolean {
+  switch (expiryMode) {
+    case 'never':
+      return true; // Always use cache if available
+    case 'always':
+      return false; // Never use cache, always refetch
+    case 'no-history':
+      return false; // Don't use historical cache
+    case 'when-expired':
+    default:
+      return Boolean(maxAge); // Use cache only if maxAge is specified
+  }
+}
+
+/**
+ * Determines whether to cache the result based on expiry mode
+ * @param expiryMode - The expiry mode setting
+ * @param maxAge - The maximum age setting
+ * @returns Whether to cache the result
+ */
+function shouldCacheResult(expiryMode?: ExpiryMode, maxAge?: number): boolean {
+  switch (expiryMode) {
+    case 'never':
+      return true; // Cache indefinitely
+    case 'always':
+      return true; // Cache but will be ignored on reads
+    case 'no-history':
+      return false; // Don't cache at all
+    case 'when-expired':
+    default:
+      return Boolean(maxAge); // Cache only if maxAge is specified
+  }
 }
